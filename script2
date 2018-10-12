@@ -1,0 +1,475 @@
+// JavaScript Document
+
+var manager;
+
+var UP = 0;
+var RIGHT = 1;
+var DOWN = 2;
+var LEFT = 3;
+
+jQuery(function ($) {
+
+	var p = window.GameManager.prototype;
+	
+	p.continueSetup = p.setup;
+	p.setup = function() {
+		this.continueSetup();
+		
+		window.manager = this;
+		this.running = false;
+		$('#run-button').html("Auto-run");
+		
+		this.ai = new Solver( this.grid );
+		
+		this.run = function() {
+			this.step();
+			if ( this.running && !this.over ) {
+				var self = this;
+				setTimeout(function(){
+					self.run();
+				}, this.ai.animationDelay);
+			}
+		}
+		
+		this.step = function() {
+			var direction;
+			switch ( this.ai.algorithm ) {
+				case 'greedy': direction = this.ai.getGreedyDirection(); break;
+				case 'dumb': direction = this.ai.getDumbDirection(); break;
+				case 'chainer': direction = this.ai.getChainerDirection(); break;
+				case 'smart': direction = this.ai.getSmartDirection(); break;
+				default: direction = this.ai.getRandomDirection();
+			}
+			
+			this.move( direction );
+		}
+	}
+	
+	p.clickStep = function() {
+		this.step();
+	}
+	
+	p.clickRun = function() {
+		this.over = false;
+		if ( this.running ) {
+			this.running = false;
+			$('#run-button').html("Auto-run");
+		} else {
+			this.running = true;
+			this.run();
+			$('#run-button').html("Stop");
+		}
+	}
+	
+	
+	/* Grid */
+	
+	Grid.prototype.clone = function() {
+		newGrid = new Grid(this.size);
+		newGrid.playerTurn = this.playerTurn;
+		for (var x = 0; x < this.size; x++) {
+			for (var y = 0; y < this.size; y++) {
+				if (this.cells[x][y]) {
+					newGrid.insertTile(this.cells[x][y].clone());
+				}
+			}
+		}
+		return newGrid;
+	};
+	
+	
+	/* Tile */
+	
+	Tile.prototype.clone = function() {
+		newTile = new Tile({ x: this.x, y: this.y }, this.value);
+		return newTile;
+	}
+	
+	
+	/* Solver */
+	
+	function Solver( grid ) {
+		this.grid = grid;	
+		this.algorithm = "smart";
+		this.animationDelay = 80;
+		this.updateParameters();
+	}
+		
+	p = Solver.prototype;
+	
+	p.updateParameters = function() {
+		this.algorithm = $('input[name=algorithm]:checked').val();
+		var speed = $('input[name=speed]').val();
+		this.animationDelay = 800 / speed;
+	}
+	
+	p.getRandomDirection = function() {
+		return Math.floor( Math.random() * 4 );
+	}
+	
+	p.getGreedyDirection = function() {
+		return this.getGreedyMove( 3 ).direction;	
+	}
+	
+	p.getGreedyMove = function( depth, flipBias ) {
+		var bestMove = { direction: DOWN, score: -1 };
+		var directions = [ DOWN, RIGHT, LEFT, UP ];
+		if ( flipBias ) direction = [ DOWN, LEFT, RIGHT, UP ];
+		for ( var i in directions ) {
+			var d = directions[i];
+			var move = this.testMove( d, this.grid, depth );
+			if ( move.moved && move.score > bestMove.score ) {
+				bestMove = move;
+			}
+		}
+		return bestMove;
+	}
+	
+	p.getMergeGreedyMove = function( depth, flipBias ) {
+		var bestMove = { direction: UP, merges: -1 };
+		var directions = [ DOWN, RIGHT, LEFT ];
+		if ( flipBias ) direction = [ DOWN, LEFT, RIGHT ];
+		for ( var i in directions ) {
+			var d = directions[i];
+			var move = this.testMove( d, this.grid, depth );
+			if ( move.moved && move.merges > bestMove.merges ) {
+				bestMove = move;
+			}
+		}
+		return bestMove;
+	}
+	
+	p.getChainerDirection = function() {
+		return this.getChainerMove().direction;
+	}
+	
+	p.getChainerMove = function( flipBias ) {
+		var currentChainedValue = this.getTotalChainedValue();
+		var bestMove = { direction: UP, weightedScore: -1 };
+		var directions = [ DOWN, RIGHT, LEFT ];
+		if ( flipBias ) direction = [ DOWN, LEFT, RIGHT ];
+		for ( var i in directions ) {
+			var d = directions[i];
+			var move = this.testMove( d, this.grid );
+			if ( move.moved ) {
+				var numTiles = this.numTiles();
+				var chainedDelta = this.getTotalChainedValue( move.resultingGrid ) - currentChainedValue;
+				move.weightedScore = Math.max( 0, 1.5 * chainedDelta * + move.score * ( numTiles / 16 ) );
+				if ( move.weightedScore > bestMove.weightedScore ) {
+					bestMove = move;
+				}
+			}
+		}
+		return bestMove;
+	}
+	
+	p.getDumbDirection = function() {
+		return this.getDumbMove().direction;	
+	}
+	
+	p.getDumbMove = function() {
+		var direction = UP;
+		if ( ! this.tileAt( 3, 3 ) ) {
+			if ( this.numTilesInRow( 3 ) > 0 ) direction = RIGHT;
+		}
+		if ( direction != RIGHT ) {
+			if ( this.testMove( DOWN ).moved ) direction = DOWN;
+			else if ( this.testMove( RIGHT ).moved ) direction = RIGHT;
+			else if ( this.testMove( LEFT ).moved ) direction = LEFT;
+		}
+		return { direction: direction };
+	}
+	
+	p.getDumbMoveReversed = function() {
+		var direction = UP;
+		if ( ! this.tileAt( 3, 3 ) ) {
+			if ( this.numTilesInRow( 3 ) > 0 ) direction = RIGHT;
+		}
+		if ( direction != RIGHT ) {
+			if ( this.testMove( DOWN ).moved ) direction = DOWN;
+			else if ( this.testMove( LEFT ).moved ) direction = LEFT;
+			else if ( this.testMove( RIGHT ).moved ) direction = RIGHT;
+		}
+		return { direction: direction };
+	}
+	
+	p.getSmartDirection = function() {
+		var bestMove = null;
+		var forceRight = false;
+		var flipBias = this.rowIsOrdered( 3 ) && this.tileAt( 0, 3 ).value >= 8;
+		
+		var dumbMove = flipBias ? this.getDumbMoveReversed() : this.getDumbMove();
+		var greedyMove = this.getMergeGreedyMove( 2, flipBias );
+		var chainerMove = this.getChainerMove( flipBias );
+		var crowded = this.numTiles() > 8;
+		
+		// If the bottom right cell is empty, move a tile into it's place 
+		if ( ! this.tileAt( 3, 3 ) ) {
+			if ( this.numTilesInRow( 3 ) > 0 ) forceRight = true;
+		}
+		
+		if ( forceRight ) {
+			bestMove = this.testMove( RIGHT );
+		} else if ( chainerMove.weightedScore > 8 || crowded ) {
+			
+			//if ( this.numTiles() > 10 && greedyMove.merges > 2 && greedyMove.direction != UP && this.tileAt( 3, 3, greedyMove.resultingGrid ) != null ) {
+			//	bestMove = greedyMove;
+			//	console.log("greedy");
+			//} else 
+			if ( chainerMove.direction != UP && this.tileAt( 3, 3, chainerMove.resultingGrid ) != null ) {
+				bestMove = chainerMove;
+			//	console.log("chainer");
+			}
+			
+		} 
+		
+		if ( bestMove == null ) {
+			bestMove = this.testMove( dumbMove.direction );
+		}
+		
+		// Make sure this move won't leave you stuck with having to go up the next turn
+		if ( ! this.isSafe( bestMove.resultingGrid ) ) {
+			if ( this.testMove( DOWN ).moved && this.isSafe( this.testMove( DOWN ).resultingGrid ) ) return DOWN;
+			if ( this.testMove( RIGHT ).moved && this.isSafe( this.testMove( RIGHT ).resultingGrid ) ) return RIGHT;
+			if ( this.testMove( LEFT ).moved && this.isSafe( this.testMove( LEFT ).resultingGrid ) ) return LEFT;
+		}
+		if ( bestMove.direction == UP ) {
+			console.log("Going up?");	
+		}
+		return bestMove.direction;
+	}
+	
+	p.tileAt = function( x, y, grid ) {
+		grid = grid || this.grid;
+		var cell = { x: x, y: y };
+		var tile = grid.cellContent( cell );
+		return tile;
+	}
+	
+	p.numTilesInRow = function( row, grid ) {
+		grid = grid || this.grid;
+		var count = 0;
+		for ( var col in [0, 1, 2, 3] ) {
+			if ( this.tileAt( col, row, grid ) ) count++;
+		}
+		return count;
+	}
+	
+	p.numTiles = function( grid ) {
+		grid = grid || this.grid;
+		var count = 0;
+		for ( var row in [0, 1, 2, 3] ) {
+			for ( var col in [0, 1, 2, 3] ) {
+				if ( this.tileAt( col, row, grid ) ) count++;
+			}
+		}
+		return count;
+	}
+	
+	p.rowIsOrdered = function( row, direction ) {
+		var value = 0;
+		for ( var x = 0; x < 4; x++ ) {
+			var tile = this.tileAt( x, row );
+			if ( tile == null || tile.value <= value ) return false;
+			value = tile.value;
+		}
+		return true;
+	}
+	
+	p.getTotalChainedValue = function( grid ) {
+		var table = this.getChainedValueTable( grid );
+		var value = 0;
+		 for ( x = 0; x < 4; x++ ) {
+			for ( y = 0; y < 4; y++ ) {
+				value += table[x][y];
+			}
+		}
+		return value;
+	}
+	
+	p._printTable = function( table ) {
+		var tableStr = "";
+		for ( y = 0; y < 4; y++ ) {
+			for ( x = 0; x < 4; x++ ) {
+				var num = table[x][y];
+				tableStr += ( Array( 5 - (num + "").length ).join(" ") ) + num;
+			}
+			tableStr += "\n";
+		}
+		console.log( tableStr );
+	}
+	
+	p.getChainedValueTable = function( grid ) {
+		var table = [];
+		var x, y;
+		for ( x = 0; x < 4; x++ ) {
+			table[x] = [];
+			for ( y = 0; y < 4; y++ ) {
+				table[x][y] = 0;
+			}
+		}
+		for ( x = 0; x < 4; x++ ) {
+			for ( y = 0; y < 4; y++ ) {
+				table[x][y] = this.getChainedValue( x, y, grid, table );
+			}
+		}
+		return table;
+	}
+	
+	p.getChainedValue = function( x, y, grid, table ) {
+		if ( table[x][y] > 0 ) return table[x][y];
+		
+		var value = 0;
+		var tile = this.tileAt( x, y, grid );
+		
+		if ( tile != null ) {
+			var adjacentTiles = this.getAdjacentTiles( x, y, grid );
+			for ( var i in adjacentTiles ) {
+				var tile2 = adjacentTiles[i];
+				var value2;
+				if ( tile.value == tile2.value * 2 ) {
+					value2 = this.getChainedValue( tile2.x, tile2.y, grid, table );
+				} else if ( tile.value == tile2.value ) {
+					value2 = tile2.value * 2;
+				} else if ( tile.value == tile2.value * 4 ) {
+					value2 = tile2.value;
+				}
+				if ( value2 > value ) value = value2;
+			}
+			value += tile.value;
+		}
+		table[x][y] = value;
+		return value;
+	}
+	
+	p.getAdjacentTiles = function( x, y, grid ) {
+		var tiles = [];
+		var deltas = [ [0,1], [0,-1], [1,0], [-1,0] ];
+		
+		for ( i in deltas ) {
+			var d = deltas[i];
+			var xx = x + d[0];
+			var yy = y + d[1];
+			if ( xx >=0 && xx < 4 && yy >=0 && yy < 4 ) {
+				var tile = this.tileAt( xx, yy, grid );
+				if ( tile != null ) tiles.push( tile );
+			}
+		}
+		return tiles;
+	}
+	
+	p.isSafe = function( grid ) {
+		var rowOfThreeFound = false;
+		for ( var row = 3; row >=0; row -- ) {
+			var count = this.numTilesInRow( row, grid );
+			//console.log( count, row );
+			if ( count == 1 || count == 2 ) return true;
+			if ( count == 3 ) {
+				if ( rowOfThreeFound ) return true;
+				else rowOfThreeFound = true;
+			}
+		}
+		
+		if ( ! rowOfThreeFound ) return true;
+		//if ( this.testMove( DOWN, grid ).moved ) return true;
+		//if ( this.testMove( RIGHT, grid ).moved ) return true;
+		//if ( this.testMove( LEFT, grid ).moved ) return true;
+		return false;
+	}
+	
+	p.testMove = function ( direction, grid, depth ) {
+		grid = grid || this.grid;
+		grid = grid.clone();
+		depth = depth || 1;
+		
+		var self	 = this;
+		var moved    = false;
+		var score    = 0;
+		var won      = false;
+		var merges 	 = 0;
+		
+		var cell, tile;
+		
+		var vector     = manager.getVector( direction );
+		var traversals = manager.buildTraversals( vector );
+		var moved      = false;
+		
+		traversals.x.forEach(function (x) {
+			traversals.y.forEach(function (y) {
+				cell = { x: x, y: y };
+				tile = grid.cellContent( cell );
+				if (tile) {
+				var positions = self.findFarthestPosition( grid, cell, vector );
+				var nextTile  = grid.cellContent( positions.next );
+				
+				if (nextTile && nextTile.value === tile.value && !nextTile.mergedFrom) {
+					var merged = new Tile(positions.next, tile.value * 2);
+					merged.mergedFrom = [tile, nextTile];
+			
+					grid.insertTile(merged);
+					grid.removeTile(tile);
+					
+					score += merged.value;
+					merges++;
+			
+					if (merged.value === 2048) won = true;
+					
+					moved = true;
+				} else {
+					if ( tile.x != positions.farthest.x || tile.y != positions.farthest.y ) {
+						grid.cells[tile.x][tile.y] = null;
+						grid.cells[positions.farthest.x][positions.farthest.y] = tile;
+						tile.updatePosition(positions.farthest);
+						moved = true;
+					}
+				}
+				}
+			});
+		});
+		
+		if ( depth > 1 ) {
+			var bestScore = 0;
+			for ( var d in [ 0, 1, 2, 3 ] ) {
+				var move = this.testMove( d, grid, depth - 1 );
+				if ( move.score > bestScore ) bestScore = move.score * .9;  // choose 1 step move over same score 2 step move
+			}
+			score += bestScore;
+			
+			var mostMerges = 0;
+			for ( var d in [ 0, 1, 2, 3 ] ) {
+				var move = this.testMove( d, grid, depth - 1 );
+				if ( move.merges > mostMerges ) mostMerges = move.merges * .9;  // choose a merge now over a merge later
+			}
+			merges += mostMerges;
+		}
+		return { direction: direction, moved: moved, score: score, merges: merges, won: won, resultingGrid: grid };
+	};
+	
+	p.findFarthestPosition = function (grid, cell, vector) {
+		var previous;
+		do {
+			previous = cell;
+			cell     = { x: previous.x + vector.x, y: previous.y + vector.y };
+		} while (grid.withinBounds(cell) && grid.cellAvailable(cell));
+		return { farthest: previous, next: cell };
+	};
+	
+	new GameManager(4, KeyboardInputManager, HTMLActuator, LocalStorageManager);
+	
+	$('#step-button').click(function(e) {
+		manager.clickStep();
+	});
+	
+	$('#run-button').click(function(e) {
+		manager.clickRun();
+	});
+	
+	$('input[name=algorithm]').change(function(e) {
+		manager.ai.updateParameters();
+	});
+	
+	$('input[name=speed]').change( function(e) {
+		manager.ai.updateParameters();
+	});
+
+});
